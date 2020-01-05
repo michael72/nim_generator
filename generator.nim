@@ -12,13 +12,13 @@ proc initGenerator*[U, T](gen: U,
        finish: proc(g: var Generator[U, T]) {.nimcall.}): auto =
   result = Generator[U, T](gen: gen, next_call: next, finish_call: finish)
 
-proc next*[U,T](g: var Generator[U,T]): Option[T] =
+proc next*[U, T](g: var Generator[U, T]): Option[T] =
   g.next_call(g) # call the actual callback
 
 proc finish*(g: var Generator) =
   g.finish_call(g)
 
-iterator items*[U,T](g: var Generator[U,T]): T =
+iterator items*[U, T](g: var Generator[U, T]): T =
   ## Iterator implementation for the receiving part of all data from the `Generator`.
   while true:
     let n = g.next()
@@ -35,21 +35,22 @@ type
     sendCond*: Cond
     recvCond*: Cond
 
-proc initGenParamSendRecv*(): GenParamSync =
+proc initGenParamSync*(): GenParamSync =
   result = GenParamSync(lock: Lock(), sendCond: Cond(), recvCond: Cond())
   initLock(result.lock)
 
 type
+  GeneratorThread*[T] = Thread[GenParamProvider[T]]
   GenParamProvider*[T] = proc(): GenParam[T] {.gcsafe.}
   GenParam*[T] = ref object
     ## Generic param to send data `T` between threads
     sync: GenParamSync
     res: Option[T]
-    thr: Option[Thread[GenParamProvider[T]]]
+    thr: Option[GeneratorThread]
 
 proc initGenParam[T](): auto =
-  result = GenParam[T](sync: initGenParamSendRecv(), res: none(T),
-                       thr: none(Thread[GenParamProvider[T]]))
+  result = GenParam[T](sync: initGenParamSync(), res: none(T),
+                       thr: none(GeneratorThread[T]))
 
 proc send*[T](g: GenParam, it: T) =
   ## Sets the result to the receiver, wakes it up and waits until the receiver is done getting the data.
@@ -70,12 +71,12 @@ proc rcv[T](g: GenParam[T]): Option[T] =
   g.res = none(T)
 
 proc createGenerator*[T](genParam: GenParam[T],
-                         thr: Thread[GenParamProvider[T]]): Generator[GenParam[T], T] =
+                         thr: GeneratorThread[T]): Generator[GenParam[T], T] =
   ## Creates a receiver for the data from the given `GenParam` and in turn
   ## provides the data as a `Generator`.
   genParam.thr = some(thr)
-  result = initGenerator(genParam, (proc (g: var Generator[GenParam[T],
-      T]): Option[T] =
+  result = initGenerator(genParam,
+    (proc (g: var Generator[GenParam[T], T]): Option[T] =
     # `next` implementation: receive the next item
     var l = g.gen.sync
     withLock l.lock:
@@ -86,11 +87,11 @@ proc createGenerator*[T](genParam: GenParam[T],
     # `finish` implementation: join threads
     if g.gen.thr.isSome():
       joinThread(g.gen.thr.get())
-      g.gen.thr = none(Thread[GenParamProvider[T]])
+      g.gen.thr = none(GeneratorThread[T])
   )
 
-proc createGeneratorThread*[T](feeder: proc(gp: GenParamProvider[T]) {.
-    thread.}): Generator[GenParam[T], T] =
+proc createGeneratorThread*[T](
+    feeder: proc(gp: GenParamProvider[T]) {.thread.}): Generator[GenParam[T], T] =
   var
     thr {.global.}: Thread[GenParamProvider[int]]
     genParam {.global.} = initGenParam[int]()
@@ -115,8 +116,8 @@ proc wrapIterator(iterName: NimNode, iterType: NimNode): NimNode =
       createGeneratorThread(sender)
 
 macro mkGeneratorTyped(iter: untyped, td: typedesc): untyped =
-  ## Interim-macro to get the type of the underlying iterator 
-  ## which is essentially the generic `T` type. 
+  ## Interim-macro to get the type of the underlying iterator
+  ## which is essentially the generic `T` type.
   result = wrapIterator(iter, td.getType[1])
 
 macro mkGenerator*(iter: untyped): untyped =
@@ -129,14 +130,14 @@ macro mkGenerator*(iter: untyped): untyped =
   ## iterator foo(): int =
   ##   var i = -1
   ##   while i < 20:
-  ##   i += 2
-  ##   yield i
-  ##   i += 3
-  ##   yield i
+  ##     i += 2
+  ##     yield i
+  ##     i += 3
+  ##     yield i
   ## var bar = mkGenerator(foo)
   ##
-  ## will create a variable bar of type Generator which - again - can be iterated - 
-  ## or it can be used to generate 1 or n items when calling the next function. 
+  ## will create a variable `bar` of type `Generator` which - again - can be iterated -
+  ## or it can be used to generate 1 or n items when calling the next function.
   ## Using a mutable `var` here is necessary as the generator changes the internal state
   ## when iterated on. So
   ##
