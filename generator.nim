@@ -1,15 +1,23 @@
 import macros, options
+when defined(js):
+  error("JS backend is not supported (threads:on)")
+
 import threadpool, locks
 
 type
   Generator*[U, T] = ref object
     gen*: U
-    next_call: proc(g: var Generator[U, T]): Option[T] {.nimcall.}
-    finish_call: proc(g: var Generator[U, T]) {.nimcall.}
+    next_call: GeneratorNext[U, T]
+    finish_call: GeneratorFinish[U, T]
+  GeneratorNext[U, T] = proc(g: var Generator[U, T]): Option[T] {.nimcall.}
+  GeneratorFinish[U, T] = proc(g: var Generator[U, T]) {.nimcall.}
+
+proc generatorFinishNoAction(g: var Generator) {.nimcall.} =
+  discard
 
 proc initGenerator*[U, T](gen: U,
-       next: proc(g: var Generator[U, T]): Option[T] {.nimcall.},
-       finish: proc(g: var Generator[U, T]) {.nimcall.}): auto =
+       next: GeneratorNext[U, T],
+       finish: GeneratorFinish[U, T] = generatorFinishNoAction): auto =
   result = Generator[U, T](gen: gen, next_call: next, finish_call: finish)
 
 proc next*[U, T](g: var Generator[U, T]): Option[T] =
@@ -46,7 +54,8 @@ type
     ## Generic param to send data `T` between threads
     sync: GenParamSync
     res: Option[T]
-    thr: Option[GeneratorThread]
+    thr: Option[GeneratorThread[T]]
+  GenIter*[T] = Generator[GenParam[T], T]
 
 proc initGenParam[T](): auto =
   result = GenParam[T](sync: initGenParamSync(), res: none(T),
@@ -71,19 +80,19 @@ proc rcv[T](g: GenParam[T]): Option[T] =
   g.res = none(T)
 
 proc createGenerator*[T](genParam: GenParam[T],
-                         thr: GeneratorThread[T]): Generator[GenParam[T], T] =
+                         thr: GeneratorThread[T]): GenIter[T] =
   ## Creates a receiver for the data from the given `GenParam` and in turn
   ## provides the data as a `Generator`.
   genParam.thr = some(thr)
   result = initGenerator(genParam,
-    (proc (g: var Generator[GenParam[T], T]): Option[T] =
+    (proc (g: var GenIter[T]): Option[T] =
     # `next` implementation: receive the next item
     var l = g.gen.sync
     withLock l.lock:
       l.sendCond.signal()
       l.recvCond.wait(l.lock)
       result = g.gen.rcv()
-  ), proc(g: var Generator[GenParam[T], T]) =
+  ), proc(g: var GenIter[T]) =
     # `finish` implementation: join threads
     if g.gen.thr.isSome():
       joinThread(g.gen.thr.get())
@@ -91,7 +100,7 @@ proc createGenerator*[T](genParam: GenParam[T],
   )
 
 proc createGeneratorThread*[T](
-    feeder: proc(gp: GenParamProvider[T]) {.thread.}): Generator[GenParam[T], T] =
+    feeder: proc(gp: GenParamProvider[T]) {.thread.}): GenIter[T] =
   var
     thr {.global.}: Thread[GenParamProvider[int]]
     genParam {.global.} = initGenParam[int]()
