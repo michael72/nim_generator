@@ -15,10 +15,10 @@ type
 proc generatorFinishNoAction(g: var Generator) {.nimcall.} =
   discard
 
-proc initGenerator*[U, T](gen: U,
+proc initGenerator*[U, T](genInit: U,
        next: GeneratorNext[U, T],
        finish: GeneratorFinish[U, T] = generatorFinishNoAction): auto =
-  result = Generator[U, T](gen: gen, next_call: next, finish_call: finish)
+  result = Generator[U, T](gen: genInit, next_call: next, finish_call: finish)
 
 proc next*[U, T](g: var Generator[U, T]): Option[T] =
   g.next_call(g) # call the actual callback
@@ -129,7 +129,7 @@ macro mkGeneratorTyped(iter: untyped, td: typedesc): untyped =
   ## which is essentially the generic `T` type.
   result = wrapIterator(iter, td.getType[1])
 
-macro mkGenerator*(iter: untyped): untyped =
+macro generator*(iter: untyped): untyped =
   ## Generates code and creates a wrapper for a given iterator.
   ## The wrapper can be passed around freely.
   ##

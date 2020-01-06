@@ -1,4 +1,4 @@
-import unittest, generator, options, sequtils
+import unittest, generator, generator_enumerate, options, sequtils
 
 suite "generator tests":
 
@@ -22,7 +22,7 @@ suite "generator tests":
           yield i
           i += 3
           yield i
-      result = mkGenerator(foo)
+      result = generator(foo)
     proc getSeq(): seq[int] =
       var bar = fun()
       result = bar.toSeq()
@@ -35,9 +35,17 @@ suite "generator tests":
       yield 2
       yield 3
 
-    var gen = mkGenerator(i123)
+    var gen = generator(i123)
 
     check(gen.next() == some(1))
     check(gen.toSeq() == @[2, 3])
 
-
+  test "enumerator on generator":
+    var gen_strings = initGenerator(0,
+      proc(g: var Generator[int, string]): Option[string] =
+      if g.gen < 3:
+        g.gen += 1
+        return some(["one", "two", "three"][g.gen-1])
+      return none(string))
+    var en = enumerate(gen_strings)
+    check(en.toSeq() == @[(0, "one"), (1, "two"), (2, "three")])
